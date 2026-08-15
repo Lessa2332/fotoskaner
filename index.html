@@ -228,7 +228,8 @@
       if (file.type.startsWith('image/')) {
         const reader = new FileReader();
         reader.onload = (e) => {
-          uploadedFiles.push({ file, base64: e.target.result.split(',')[1] });
+          const base64Data = e.target.result.split(',')[1];
+          uploadedFiles.push({ file, base64: base64Data });
           renderPreviews();
         };
         reader.readAsDataURL(file);
@@ -271,7 +272,6 @@
     const mode = document.querySelector('input[name="appMode"]:checked').value;
     const templateText = document.getElementById('templateInput').value.trim();
 
-    // Progress Bar UI
     const progressContainer = document.getElementById('progressContainer');
     const progressFill = document.getElementById('progressFill');
     const progressText = document.getElementById('progressText');
@@ -279,14 +279,13 @@
 
     let extractedData = [];
 
-    // System Instruction setup
     let systemInstruction = "";
     if (mode === 'auto') {
-      systemInstruction = "Зчитай усі текстові та табличні дані з документа. Поверни масив JSON об'єктів, де ключі — це назви колонок українською мовою.";
+      systemInstruction = "Зчитай усі текстові та табличні дані з документа. Поверни суворий масив JSON об'єктів без стороннього тексту, де ключі — це назви колонок українською мовою.";
     } else if (mode === 'custom') {
-      systemInstruction = `Витягни дані з документа строго за вказаними стовпчиками: ${templateText}. Якщо даних немає, вкажи порожній рядок.`;
+      systemInstruction = `Витягни дані з документа строго за вказаними стовпчиками: ${templateText}. Поверни JSON масив об'єктів. Якщо даних немає, вкажи порожній рядок.`;
     } else if (mode === 'grading') {
-      systemInstruction = `Ти — перевіряючий вчитель. Перевір роботу учня за цим КЛЮЧЕМ ВІДПОВІДЕЙ: ${templateText}. Поверни поля: Pib (ПІБ учня), Answers (Відповіді учня), Errors (Помилки), TotalScore (Нараховано балів), Grade (Оцінка).`;
+      systemInstruction = `Ти — перевіряючий вчитель. Перевір роботу учня за цим КЛЮЧЕМ ВІДПОВІДЕЙ: ${templateText}. Поверни JSON масив об'єктів з полями: Pib (ПІБ учня), Answers (Відповіді учня), Errors (Помилки), TotalScore (Нараховано балів), Grade (Оцінка).`;
     }
 
     for (let i = 0; i < uploadedFiles.length; i++) {
@@ -314,8 +313,18 @@
         });
 
         const resData = await response.json();
-        if (resData.candidates && resData.candidates[0].content.parts[0].text) {
-          const jsonText = resData.candidates[0].content.parts[0].text;
+
+        if (resData.error) {
+          alert(`Помилка API (${resData.error.code}): ${resData.error.message}`);
+          break;
+        }
+
+        if (resData.candidates && resData.candidates[0]?.content?.parts[0]?.text) {
+          let jsonText = resData.candidates[0].content.parts[0].text;
+          
+          // Очищення від Markdown-тегів ```json ... ```
+          jsonText = jsonText.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/, '').trim();
+
           const parsed = JSON.parse(jsonText);
           if (Array.isArray(parsed)) {
             extractedData.push(...parsed);
@@ -324,7 +333,8 @@
           }
         }
       } catch (err) {
-        console.error("Помилка обробки:", err);
+        console.error("Помилка обробки файлу №" + (i + 1), err);
+        alert(`Не вдалося розпізнати документ №${i + 1}. Перевірте консоль розробника.`);
       }
     }
 
@@ -333,8 +343,6 @@
 
     if (extractedData.length > 0) {
       renderTable(extractedData);
-    } else {
-      alert("Не вдалося розпізнати дані з документів.");
     }
   }
 
@@ -347,17 +355,18 @@
     thead.innerHTML = '';
     tbody.innerHTML = '';
 
-    // Collect all unique keys for headers
     const headers = new Set();
-    data.forEach(item => Object.keys(item).forEach(k => headers.add(k)));
+    data.forEach(item => {
+      if (typeof item === 'object' && item !== null) {
+        Object.keys(item).forEach(k => headers.add(k));
+      }
+    });
     const headerArray = Array.from(headers);
 
-    // Render Headers
     const headRow = document.createElement('tr');
-    headRow.innerHTML = '<th>#</th>' + headerArray.map(h => `<th contenteditable="true">${h}</th>`).join('') + '<th></th>';
+    headRow.innerHTML = '<th>#</th>' + headerArray.map(h => `<th contenteditable="true">${h}</th>`).join('') + '<th>Дії</th>';
     thead.appendChild(headRow);
 
-    // Render Data Rows
     data.forEach((row, rIndex) => {
       const tr = document.createElement('tr');
       let rowHtml = `<td>${rIndex + 1}</td>`;
@@ -409,22 +418,33 @@
     btn.closest('tr').remove();
   }
 
+  // Очищення таблиці від колонки дій перед експортом
+  function getCleanTableClone() {
+    const originalTable = document.getElementById('dataTable');
+    const clone = originalTable.cloneNode(true);
+    clone.querySelectorAll('tr').forEach(row => {
+      if (row.lastElementChild) row.lastElementChild.remove();
+    });
+    return clone;
+  }
+
   // Export Functions
   function exportExcel() {
-    const table = document.getElementById('dataTable');
-    const wb = XLSX.utils.table_to_book(table, { sheet: "Doc2Sheet_Data" });
+    const cleanTable = getCleanTableClone();
+    const wb = XLSX.utils.table_to_book(cleanTable, { sheet: "Doc2Sheet_Data" });
     XLSX.writeFile(wb, "doc2sheet_export.xlsx");
   }
 
   function exportCSV() {
-    const table = document.getElementById('dataTable');
-    const wb = XLSX.utils.table_to_book(table);
+    const cleanTable = getCleanTableClone();
+    const wb = XLSX.utils.table_to_book(cleanTable);
     XLSX.writeFile(wb, "doc2sheet_export.csv", { bookType: "csv" });
   }
 
   function exportWord() {
-    const tableHtml = document.getElementById('dataTable').outerHTML;
-    const header = "<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'><head><meta charset='utf-8'></head><body>";
+    const cleanTable = getCleanTableClone();
+    const tableHtml = cleanTable.outerHTML;
+    const header = "<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='[http://www.w3.org/TR/REC-html40](http://www.w3.org/TR/REC-html40)'><head><meta charset='utf-8'></head><body>";
     const footer = "</body></html>";
     const sourceHTML = header + tableHtml + footer;
 
